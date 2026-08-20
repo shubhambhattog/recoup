@@ -32,6 +32,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+
+# recoup generated artifacts (reproducible via `npm run recover:batch`)
+/artifacts
+
+# playwright-cli scratch (snapshots, console logs)
+/.playwright-cli
 
 # vercel
 .vercel

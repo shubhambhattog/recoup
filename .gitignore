@@ -40,6 +40,9 @@ yarn-error.log*
 # playwright-cli scratch (snapshots, console logs)
 /.playwright-cli
 
+# shadcn MCP config (local dev tool, not part of the product)
+/.mcp.json
+
 # vercel
 .vercel
 

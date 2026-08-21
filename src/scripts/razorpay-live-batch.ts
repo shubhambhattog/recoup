@@ -119,26 +119,49 @@ async function main() {
         continue;
       }
 
-      const decision = gate(c, iv, ctx, now);
+      let action = iv;
+      const decision = gate(c, action, ctx, now);
       if (!decision.allowed) {
-        console.log(`    gate       BLOCKED (${decision.reason}) → no money action taken\n`);
+        console.log(`    gate       BLOCKED (${decision.reason})`);
         ledger.append({
           at: now,
           caseId: c.id,
           type: "gate_blocked",
-          summary: `Blocked ${iv.kind}: ${decision.reason}.`,
-          data: { reason: decision.reason },
+          summary: `Blocked ${action.kind}: ${decision.reason}.`,
+          data: { reason: decision.reason, fallback: decision.fallback },
         });
-        blocked++;
-        continue;
+
+        // Mirror the simulated loop: a block with a softer fallback is a
+        // downgrade, not a dead end. Anything else stops the case here.
+        if (decision.fallback === "nudge" && action.kind !== "nudge") {
+          action = {
+            kind: "nudge",
+            scheduledAt: now,
+            channel: action.channel,
+            message: action.message,
+            rationale: `Fallback nudge (was ${action.kind}: ${decision.reason}).`,
+            requiresApproval: false,
+          };
+          const retry = gate(c, action, ctx, now);
+          if (!retry.allowed) {
+            console.log(`               fallback nudge also blocked (${retry.reason}) → stopping\n`);
+            blocked++;
+            continue;
+          }
+          console.log(`               → downgraded to nudge`);
+        } else {
+          console.log(`               → no money action taken\n`);
+          blocked++;
+          continue;
+        }
       }
-      if (iv.kind === "escalate_human" || iv.kind === "stop") {
-        console.log(`    outcome    ${iv.kind} — correctly no money action\n`);
-        ledger.append({ at: now, caseId: c.id, type: "exception", summary: `${iv.kind}: ${iv.rationale}` });
+      if (action.kind === "escalate_human" || action.kind === "stop") {
+        console.log(`    outcome    ${action.kind} — correctly no money action\n`);
+        ledger.append({ at: now, caseId: c.id, type: "exception", summary: `${action.kind}: ${action.rationale}` });
         continue;
       }
 
-      const outcome = await executor.execute(c, iv, now);
+      const outcome = await executor.execute(c, action, now);
       const linkId = outcome.idempotencyKey!;
 
       const ev = ledger.forCase(c.id).find((e) => e.type === "action_executed");
@@ -151,7 +174,7 @@ async function main() {
       // step index — bumping it first would produce a different reference and
       // therefore a genuinely different link, which would prove the opposite of
       // what we are claiming. (It did exactly that until this was fixed.)
-      const again = await executor.execute(c, iv, now);
+      const again = await executor.execute(c, action, now);
       console.log(
         `    idempotent re-run → ${again.idempotencyKey === linkId ? "SAME link, no duplicate created ✓" : "DIFFERENT link ✗"}`,
       );
@@ -161,7 +184,7 @@ async function main() {
       c.contacts++;
       const dayKey = contactDayKey(c.customer.id, now, c.customer.timezoneOffsetMin);
       ctx.contactsByCustomerDay.set(dayKey, (ctx.contactsByCustomerDay.get(dayKey) ?? 0) + 1);
-      if (iv.kind === "incentive_link") ctx.incentiveSpentPaise += iv.incentivePaise ?? 0;
+      if (action.kind === "incentive_link") ctx.incentiveSpentPaise += action.incentivePaise ?? 0;
 
       const recovered = await executor.reconcile(linkId);
       console.log(`    reconciled → recovered=${recovered === "success" ? "true ✓" : "false (awaiting customer payment)"}\n`);

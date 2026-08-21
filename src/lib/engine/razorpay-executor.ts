@@ -28,6 +28,40 @@ import type { Ledger } from "@/lib/ledger/ledger";
 import { createPaymentLink, fetchPaymentLink } from "@/lib/razorpay/client";
 import { toRupees } from "@/lib/core/money";
 
+const KIND_CODE: Record<string, string> = {
+  retry_payment: "rp",
+  switch_method_link: "sml",
+  nudge: "nud",
+  incentive_link: "inc",
+  promise_to_pay: "ptp",
+};
+
+/**
+ * Build the idempotency key for a money action.
+ *
+ * Razorpay caps `reference_id` at 40 characters, so this is compact by
+ * necessity: a run-scoped prefix, the case number, a short intervention code,
+ * and the step index. Two properties matter and are covered by tests:
+ *
+ *  • **Stable** — the same (run, case, intervention, step) must always produce
+ *    the same string. That stability IS the idempotency guarantee.
+ *  • **Run-scoped** — the prefix must distinguish runs, or a second run would
+ *    adopt the first run's links for a different customer and amount.
+ */
+export function buildReferenceId(
+  prefix: string,
+  caseId: string,
+  kind: string,
+  step: number,
+): string {
+  const caseNo = caseId.replace(/^case_/, "");
+  const ref = `${prefix}-${caseNo}-${KIND_CODE[kind] ?? kind.slice(0, 3)}-${step}`;
+  if (ref.length > 40) {
+    throw new Error(`reference_id "${ref}" exceeds Razorpay's 40-character limit`);
+  }
+  return ref;
+}
+
 export class RazorpayExecutor implements Executor {
   /**
    * @param referencePrefix namespaces reference_ids so two runs (different
@@ -83,27 +117,8 @@ export class RazorpayExecutor implements Executor {
     };
   }
 
-  /**
-   * Build the idempotency key. Razorpay caps reference_id at 40 characters, so
-   * this is compact by necessity: prefix, case number, a short intervention
-   * code, and the step index. It must stay stable for a given (run, case, step)
-   * — that stability IS the idempotency guarantee.
-   */
   private referenceFor(c: AtRiskCase, iv: Intervention): string {
-    const KIND: Record<string, string> = {
-      retry_payment: "rp",
-      switch_method_link: "sml",
-      nudge: "nud",
-      incentive_link: "inc",
-      promise_to_pay: "ptp",
-    };
-    const caseNo = c.id.replace(/^case_/, "");
-    const step = c.contacts + c.attempts.length;
-    const ref = `${this.referencePrefix}-${caseNo}-${KIND[iv.kind] ?? iv.kind.slice(0, 3)}-${step}`;
-    if (ref.length > 40) {
-      throw new Error(`reference_id "${ref}" exceeds Razorpay's 40-character limit`);
-    }
-    return ref;
+    return buildReferenceId(this.referencePrefix, c.id, iv.kind, c.contacts + c.attempts.length);
   }
 
   async reconcile(linkId: string): Promise<"success" | "failed"> {

@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "recover:batch": "tsx src/scripts/run-batch.ts",
     "sweep": "tsx src/scripts/sweep.ts",
-    "test": "tsx --test src/tests/engine.test.ts src/tests/guardrails.test.ts",
+    "test": "tsx --test src/tests/engine.test.ts src/tests/guardrails.test.ts src/tests/razorpay.test.ts",
     "eval:diagnosis": "tsx src/scripts/eval-diagnosis.ts",
     "llm:smoke": "tsx src/scripts/llm-smoke.ts",
     "razorpay:demo": "tsx src/scripts/razorpay-demo.ts",

@@ -633,7 +633,7 @@ export default function Dashboard({ initial }: { initial: ScenarioResult }) {
               right={<span className="mono text-[11px] text-faint">{selected ? shortId(selected) : ""}</span>}
             >
               {selected && caseById.get(selected) ? (
-                <TraceView c={caseById.get(selected)!} trace={trace} />
+                <TraceView c={caseById.get(selected)!} trace={trace} seed={data.seed} />
               ) : (
                 <div className="grid h-full place-items-center p-8 text-sm text-muted-foreground">
                   Select a case to replay its full decision trail.
@@ -751,7 +751,7 @@ function CaseCard({
   );
 }
 
-function TraceView({ c, trace }: { c: AtRiskCase; trace: LedgerEvent[] }) {
+function TraceView({ c, trace, seed }: { c: AtRiskCase; trace: LedgerEvent[]; seed: number }) {
   const bk = bucketOf(c);
   return (
     <div className="flex h-full flex-col">
@@ -799,7 +799,7 @@ function TraceView({ c, trace }: { c: AtRiskCase; trace: LedgerEvent[] }) {
         </ol>
       </ScrollArea>
       <Separator />
-      <LiveLinkPanel key={c.id} c={c} />
+      <LiveLinkPanel key={`${seed}:${c.id}`} c={c} seed={seed} />
     </div>
   );
 }
@@ -815,7 +815,7 @@ type LinkApi =
   | { ok: true; view?: LinkView; idempotentReuse?: boolean; link?: LinkView | null }
   | { ok: false; reason: string; message: string };
 
-function LiveLinkPanel({ c }: { c: AtRiskCase }) {
+function LiveLinkPanel({ c, seed }: { c: AtRiskCase; seed: number }) {
   const [loading, setLoading] = useState(false);
   const [res, setRes] = useState<LinkApi | null>(null);
 
@@ -827,7 +827,10 @@ function LiveLinkPanel({ c }: { c: AtRiskCase }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: "create",
-          referenceId: `${c.id}-live`,
+          // Seed-scoped: case ids repeat across seeds with different customers
+          // and amounts, so without this a re-run at another seed would reuse
+          // the previous seed's link and report it as an idempotent match.
+          referenceId: `s${seed}-${c.id}-live`,
           amountPaise: c.amount,
           name: c.customer.name,
           email: c.customer.contact.email,

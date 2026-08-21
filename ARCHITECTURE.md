@@ -59,6 +59,7 @@ things verify different parts:
 | `npm run sweep` | 50 seeds (6,000 cases) + a chaos sensitivity grid; **exits non-zero if any run double-charges** |
 | `npm test` | Invariants hold under *randomized policies* (attempt caps, cooldowns, budgets, thresholds) — safety isn't a property of our chosen numbers |
 | `npm run eval:diagnosis` | Diagnosis accuracy vs hidden truth, per classifier path |
+| `npm run measure:lag` | Sizes the idempotency retry ladder from Razorpay's *measured* read-after-write lag rather than a guessed timeout |
 
 CI runs all four on every push (`.github/workflows/ci.yml`), so a regression that
 quietly breaks a safety property fails the build rather than shipping.

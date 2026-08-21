@@ -185,9 +185,14 @@ export async function createPaymentLink(
     // response — not just an explicit duplicate. So we always ask whether it
     // exists before concluding anything, and never re-create blindly.
     //
-    // Razorpay's list endpoint is read-after-write eventually consistent, so
-    // give it a few chances. Each attempt is isolated: a transient list error
-    // must not abort the remaining attempts.
+    // Razorpay's list endpoint is read-after-write eventually consistent. The
+    // ladder below is sized from measurement, not guesswork: `npm run
+    // measure:lag` polls the list endpoint after a create and records how long
+    // the link takes to appear. Observed over 5 samples — mean 1465ms, p90
+    // 2120ms, max 2120ms (artifacts/lag-measurement.json). ~6s of total waiting
+    // is roughly 3x the observed worst case.
+    //
+    // Each attempt is isolated: a transient list error must not abort the rest.
     for (const delay of [0, 500, 1500, 4000]) {
       if (delay) await sleep(delay);
       try {

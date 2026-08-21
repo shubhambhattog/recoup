@@ -21,6 +21,23 @@ trail, compliant escalation, and stopping rules.
 
 ---
 
+## Verify it in 90 seconds
+
+No API keys, no network, no setup beyond `npm install`. Each command proves a
+different claim, and every one is deterministic from its seed:
+
+| Command | What it proves |
+| --- | --- |
+| `npm run recover:batch` | Money recovered across a batch, with the full audit ledger |
+| `npm run sweep` | It wasn't one lucky batch — 50 seeds, 6,000 cases; **exits non-zero if any run double-charges** |
+| `npm test` | The safety invariants hold under *randomised* policies (24 tests) |
+| `npm run eval:diagnosis` | Diagnosis graded against ground truth the agent never sees |
+
+Or just open the [live demo](https://recoup-shubhambhattog.vercel.app) and press
+**Run batch**.
+
+---
+
 ## The evidence
 
 Not one lucky batch — **50 independent seeds, 6,000 cases**, every run
@@ -88,14 +105,61 @@ that (*"one cherry-picked match proves nothing"*). So:
 
 ## The recovery loop
 
+```mermaid
+flowchart TD
+    D["DETECT<br/>failed payment · failed sub<br/>abandoned cart · overdue invoice"]
+    DX["DIAGNOSE<br/>error code → rules<br/>free text → LLM"]
+    P["DECIDE<br/>deterministic policy ladder"]
+    G{"GATE"}
+    A["ACT<br/>idempotent charge<br/>or payment link"]
+    O{"OBSERVE"}
+    RC["RECONCILE<br/>before any re-charge"]
+    R(["RECOVERED"])
+    S(["STOPPED / ESCALATED"])
+    H(["AWAITING HUMAN"])
+
+    D --> DX --> P --> G
+    G -->|allowed| A --> O
+    G -->|"caps · opt-out · deadline"| S
+    G -->|"quiet hours · daily cap"| P
+    G -->|"high value"| H
+    H -->|approved| A
+    O -->|paid| R
+    O -->|"unknown outcome"| RC
+    O -->|"still unpaid"| P
+    RC -->|"money did move"| R
+    RC -->|"it did not"| P
+
+    style R fill:#10b981,stroke:#10b981,color:#000000
+    style S fill:#7c3aed,stroke:#7c3aed,color:#ffffff
+    style G fill:#d97706,stroke:#d97706,color:#000000
+    style RC fill:#0891b2,stroke:#0891b2,color:#ffffff
 ```
-  DETECT ─▶ DIAGNOSE ─▶ DECIDE ─▶ [GATE] ─▶ ACT ─▶ OBSERVE ─┐
-    ▲                                                        │
-    └──────────────── loop until recovered ─────────────────┘
-                       or a STOPPING RULE fires
-                  (recovered · escalated · max attempts
-                   · past deadline · opted out · awaiting human)
+
+The **gate is the only path to a money action** — nothing reaches Razorpay
+without passing every bound. And an **unknown outcome is always reconciled before
+a re-charge**, which is what keeps double-charges at zero.
+
+### One brain, two hands
+
+```mermaid
+flowchart TD
+    L["Recovery loop<br/>diagnose · policy · guardrails"]
+    E{{"Executor interface"}}
+    S["SimExecutor<br/>hidden ground truth + injected chaos"]
+    R["RazorpayExecutor<br/>real test-mode Payment Links"]
+    M["Measured batch metrics<br/>6,000 cases, reproducible"]
+    W["Real money movement<br/>idempotent · reconciled"]
+
+    L --> E
+    E --> S --> M
+    E --> R --> W
+
+    style E fill:#2563eb,stroke:#2563eb,color:#ffffff
 ```
+
+The identical decision engine drives both. That's why the numbers are honest
+*and* the integration is real — there is no separate demo logic.
 
 ## AI judgment: the right tool, and where we chose *not* to use one
 
@@ -227,8 +291,9 @@ src/
     razorpay/    test-mode client wrapper
     metrics/     report · diagnosis scoring
   app/           dashboard + /api/run + /api/razorpay/{link,webhook}
-  scripts/       run-batch · sweep · eval-diagnosis · razorpay-demo · razorpay-live-batch
-  tests/         guardrail fuzz suite + engine tests
+  scripts/       run-batch · sweep · eval-diagnosis · measure-lag
+                 razorpay-demo · razorpay-live-batch
+  tests/         guardrail fuzz suite · engine tests · idempotency tests
 ```
 
 ## Docs
@@ -236,7 +301,17 @@ src/
 - **[`SIMULATION.md`](SIMULATION.md)** — every assumption, what's grounded in
   regulation, and how we de-risked the rest.
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — the deep dive.
-- **[`FAILURE_STORY.md`](FAILURE_STORY.md)** — what broke and how I got out.
+- **[`FAILURE_STORY.md`](FAILURE_STORY.md)** — nine things that broke and how I
+  got out, including the two I'd least like to admit.
+
+## A note on numbers in this README
+
+Every figure here comes from a command in this repo, not from a spreadsheet.
+Where a value was a judgement call, it was measured instead of guessed — the
+retry ladder that covers Razorpay's read-after-write lag is sized from
+`npm run measure:lag` (mean 1,465ms, worst case 2,120ms), not from feel. Where a
+number flattered us, it was replaced with a stricter one — see the "1790% uplift"
+story in [`FAILURE_STORY.md`](FAILURE_STORY.md).
 
 ## Tech stack
 

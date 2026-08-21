@@ -43,6 +43,9 @@ yarn-error.log*
 # shadcn MCP config (local dev tool, not part of the product)
 /.mcp.json
 
+# personal interview prep — not part of the project
+/docs/PANEL_PREP.md
+
 # vercel
 .vercel
 

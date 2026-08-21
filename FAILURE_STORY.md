@@ -159,9 +159,19 @@ nothing and I re-threw the duplicate error. A **safe, already-completed action
 was being reported as a failure.**
 
 I only found it because I probed the API directly instead of guessing: querying
-the same filter a minute later returned the link correctly, which ruled out "the
-filter doesn't work" and pointed straight at timing. My single-link demo had
-passed by pure luck — enough wall-clock had elapsed between its two calls.
+the same filter later returned the link correctly, which ruled out "the filter
+doesn't work" and pointed straight at timing. My single-link demo had passed by
+pure luck — enough wall-clock had elapsed between its two calls.
+
+**Then I measured it rather than guessing a timeout.** My first fix used a retry
+ladder I had sized by feel. That bothered me, so I wrote `npm run measure:lag`:
+create a link, poll `paymentLink.all({reference_id})` every 250ms until it
+appears, repeat, clean up after itself. The answer — **mean 1,465ms, p90 2,120ms,
+worst case 2,120ms** across the samples (`artifacts/lag-measurement.json`). The
+ladder totals ~6s, about 3× the observed worst case, so it is correctly sized —
+but now I can say that with a number instead of a shrug. It also corrected my own
+earlier impression that the lag was on the order of a minute; a minute was simply
+when I next happened to look.
 
 **Fix.** Three changes: an **in-process idempotency store keyed by
 `reference_id`** so a repeat of the same step returns the known link without

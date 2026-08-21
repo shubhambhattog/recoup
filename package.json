@@ -14,7 +14,8 @@
     "eval:diagnosis": "tsx src/scripts/eval-diagnosis.ts",
     "llm:smoke": "tsx src/scripts/llm-smoke.ts",
     "razorpay:demo": "tsx src/scripts/razorpay-demo.ts",
-    "razorpay:live": "tsx src/scripts/razorpay-live-batch.ts"
+    "razorpay:live": "tsx src/scripts/razorpay-live-batch.ts",
+    "measure:lag": "tsx src/scripts/measure-lag.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.47",

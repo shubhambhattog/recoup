@@ -74,6 +74,21 @@ function toView(link: RawLink, referenceId?: string): PaymentLinkView {
   };
 }
 
+/**
+ * In-process idempotency store, keyed by our reference_id.
+ *
+ * Razorpay itself is the durable guarantee — it rejects a duplicate
+ * reference_id — but its *list* endpoint is read-after-write eventually
+ * consistent: a link created milliseconds ago may not yet appear in
+ * `paymentLink.all({reference_id})`. Without this cache, an immediate retry of
+ * the same step sees "duplicate" from create and "not found" from list, and
+ * would surface an error for what is actually a safe, already-completed action.
+ * (Found by running the live batch — see FAILURE_STORY.md.)
+ */
+const linksByReference = new Map<string, PaymentLinkView>();
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export async function createPaymentLink(input: {
   amountPaise: number;
   referenceId: string;
@@ -82,6 +97,11 @@ export async function createPaymentLink(input: {
   notes?: Record<string, string>;
 }): Promise<{ view: PaymentLinkView; idempotentReuse: boolean }> {
   const api = rzp();
+
+  // Fast path: we already created this exact reference in this process.
+  const cached = linksByReference.get(input.referenceId);
+  if (cached) return { view: cached, idempotentReuse: true };
+
   try {
     const link = await api.paymentLink.create({
       amount: input.amountPaise,
@@ -98,14 +118,31 @@ export async function createPaymentLink(input: {
       reminder_enable: true,
       notes: input.notes,
     });
-    return { view: toView(link as RawLink, input.referenceId), idempotentReuse: false };
+    const view = toView(link as RawLink, input.referenceId);
+    linksByReference.set(input.referenceId, view);
+    return { view, idempotentReuse: false };
   } catch (err) {
-    // A duplicate reference_id means we already created this exact link —
-    // return the existing one instead of creating a second (idempotency).
-    const existing = await findLinkByReference(input.referenceId);
-    if (existing) return { view: existing, idempotentReuse: true };
+    // A duplicate reference_id means this link already exists — return it
+    // rather than creating a second one. The list endpoint can lag behind the
+    // write, so retry briefly before giving up.
+    if (!isDuplicateReferenceError(err)) throw err;
+    for (const delay of [0, 400, 1200]) {
+      if (delay) await sleep(delay);
+      const existing = await findLinkByReference(input.referenceId);
+      if (existing) {
+        linksByReference.set(input.referenceId, existing);
+        return { view: existing, idempotentReuse: true };
+      }
+    }
     throw err;
   }
+}
+
+/** Razorpay reports an already-used reference_id as a 400 BAD_REQUEST_ERROR. */
+function isDuplicateReferenceError(err: unknown): boolean {
+  const e = err as { statusCode?: number; error?: { description?: string } } | undefined;
+  const desc = e?.error?.description ?? "";
+  return e?.statusCode === 400 && /reference_id/i.test(desc) && /already exists/i.test(desc);
 }
 
 export async function findLinkByReference(referenceId: string): Promise<PaymentLinkView | null> {

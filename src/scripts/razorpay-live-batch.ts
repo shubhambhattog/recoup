@@ -25,7 +25,7 @@ import { gate, type GuardContext } from "@/lib/engine/guardrails";
 import { RazorpayExecutor } from "@/lib/engine/razorpay-executor";
 import { Ledger } from "@/lib/ledger/ledger";
 import { DEFAULT_POLICY } from "@/lib/domain/config";
-import { razorpayConfigured, isLiveKey } from "@/lib/razorpay/client";
+import { razorpayConfigured, isLiveKey, fetchPaymentLink } from "@/lib/razorpay/client";
 import { formatINR } from "@/lib/core/money";
 import { getLlm } from "@/lib/ai/llm";
 
@@ -100,8 +100,15 @@ async function main() {
     const same = again.idempotencyKey === linkId;
     console.log(`    idempotent re-run → ${same ? "SAME link, no duplicate charge ✓" : "DIFFERENT link ✗"}`);
 
-    const status = await executor.reconcile(linkId);
-    console.log(`    reconciled status = ${status}\n`);
+    // Reconcile against Razorpay's live view of the link. `recovered` only
+    // becomes true once the customer actually pays it — until then the money is
+    // still at risk, which is the honest state to report.
+    const live = await fetchPaymentLink(linkId);
+    const recovered = await executor.reconcile(linkId);
+    console.log(
+      `    reconciled Razorpay status="${live?.status ?? "unknown"}" paid=${formatINR(live?.amountPaid ?? 0)}` +
+        ` → recovered=${recovered === "success"}${recovered === "success" ? " ✓" : " (awaiting customer payment)"}\n`,
+    );
   }
 
   const outDir = path.join(process.cwd(), "artifacts");

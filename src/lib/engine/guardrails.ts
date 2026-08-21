@@ -40,6 +40,14 @@ export interface GuardContext {
   contactsByCustomerDay: Map<string, number>;
   /** Human-approval hook. In sim, a mock approver; in prod, a real gate. */
   approve?: (c: AtRiskCase, iv: Intervention) => boolean;
+  /**
+   * Set when the executor fulfils EVERY intervention by sending the customer a
+   * payment link (the Razorpay test-mode path). There, a `retry_payment` is not
+   * a silent re-charge — it reaches the customer — so it must also satisfy the
+   * contact rules (quiet hours, contact caps), not just the money rules.
+   * Without this, a "retry" would legally bypass the RBI contact window.
+   */
+  linkBasedExecutor?: boolean;
 }
 
 /** A gate decision, with an optional deferral time for "come back later" blocks. */
@@ -60,7 +68,10 @@ export function gate(
 ): GateDecision {
   const p = ctx.policy;
   const isMoney = MONEY_ACTIONS.has(iv.kind);
-  const isContact = CONTACT_ACTIONS.has(iv.kind);
+  // With a link-based executor every action also reaches the customer, so the
+  // contact rules apply to money actions too.
+  const isContact =
+    CONTACT_ACTIONS.has(iv.kind) || (ctx.linkBasedExecutor === true && isMoney);
 
   // 1. Opt-out is an absolute stop — no contact, no charge, ever.
   if (c.customer.optedOut) {

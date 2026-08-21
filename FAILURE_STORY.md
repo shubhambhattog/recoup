@@ -175,7 +175,76 @@ executed cannot reveal. The simulator's idempotency store is instantly
 consistent; the real one is not. Everything I could measure in simulation was
 green while the real integration was broken.
 
-### 7. A lint rule that was right
+### 7. I built a guardrail system and then nearly spammed real strangers
+
+This is the one I'm least comfortable writing down, which is exactly why it's here.
+
+**Symptom.** A code review of the live-Razorpay commit flagged that
+`npm run razorpay:live` — a script I had already run — could send real SMS to
+real people.
+
+**Root cause.** Two safe-looking decisions that were lethal in combination. The
+synthetic customer generator produces realistic contact details: emails at
+`@example.com` (a *reserved* domain — safe by design) and phone numbers of the
+form `+9198XXXXXXXX`. There is no reserved mobile range in India, so those
+numbers are not fake — they're plausible, live, in-service numbers belonging to
+whoever actually owns them. Separately, my Razorpay client passed
+`notify: { sms: true, email: true }` and `reminder_enable: true`, because that is
+what a real dunning integration would do.
+
+So the moment the live batch ran end to end, it asked Razorpay to text a payment
+demand — plus recurring reminders — to a handful of strangers picked by a random
+number generator. Checking the account confirmed it: three links with `sms: true`
+against real-format numbers, all with reminders enabled.
+
+**What I did.** Cancelled every outstanding link immediately, which stops the
+reminder schedule, before changing any code. Then fixed it properly, with two
+independent locks:
+
+1. **Delivery is opt-in, twice.** `createPaymentLink` now defaults to no email,
+   no SMS and no reminders. Turning delivery on requires *both* an explicit
+   `notify` argument *and* the `RAZORPAY_ALLOW_NOTIFICATIONS=1` environment
+   switch. One lock can be forgotten; two is a decision.
+2. **The live path sends no contact details at all.** `RazorpayExecutor` passes
+   only the customer's name. Even if the flags were flipped by accident,
+   Razorpay has no address to deliver to.
+
+Every `action_executed` event now records `notificationsSent: false` on the
+ledger, so the audit trail proves it rather than asserting it.
+
+**Why it stings, and why it belongs in the pitch.** The entire thesis of this
+project is *the agent cannot misbehave with customers* — opt-out honoured
+forever, RBI contact hours, contact caps. I enforced all of that rigorously
+inside the simulated loop, and then walked straight past it in a demo script,
+because the script was "just a demo" and lived outside the loop that carries the
+guardrails.
+
+The lesson is specific: **a guardrail that lives in one code path is not a
+guardrail, it's a convention.** The same review found the matching structural
+version of this bug — `RazorpayExecutor` turns every intervention into a
+customer-facing payment link, but the gate classified `retry_payment` as a *money*
+action, so it skipped the quiet-hours and contact-cap checks entirely. A "retry"
+on the live path could legally have gone out at 3am. That's fixed too: the guard
+context now carries `linkBasedExecutor`, and when set, money actions are held to
+the contact rules as well.
+
+### 8. The idempotency proof that proved the opposite
+
+While fixing the above I re-ran the live batch and it printed
+`idempotent re-run → DIFFERENT link ✗` — my own proof failing.
+
+The reference id is derived from the case's step index
+(`contacts + attempts.length`), and I had incremented `c.contacts` *before* the
+verification call. So the "identical" repeat computed a different reference and
+Razorpay correctly created a genuinely different link. The demo had been quietly
+creating two links per case — and the extra volume is what tripped Razorpay's
+rate limiter with a 429, which is how I noticed at all.
+
+Moving the verification above the counter mutation fixed it, halved the API
+calls, and turned the check into a real one. Now it reads
+`SAME link, no duplicate created ✓` — and it means it.
+
+### 9. A lint rule that was right
 
 Fetching the first batch in a `useEffect` on mount tripped
 `react-hooks/set-state-in-effect`. The lazy fix is a disable comment. The correct

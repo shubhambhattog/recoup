@@ -196,8 +196,17 @@ npm run razorpay:live     # a live mini-batch driven by the real decision loop
 ```
 
 `npm run razorpay:live` runs the actual pipeline (diagnose → policy → gate →
-execute) against Razorpay, creating real test-mode Payment Links idempotently and
-reconciling their live status — refusing to run at all if it detects a live key.
+execute) against Razorpay on the wall clock, creating real test-mode Payment
+Links idempotently and reconciling their live status — refusing to run at all if
+it detects a live key. Smart timing is honoured, not bypassed: an intervention
+scheduled for tomorrow is reported as deferred rather than fired for the demo.
+
+**Outbound delivery is off by default.** The synthetic customers carry
+real-*format* Indian mobile numbers, so enabling notifications on generated data
+would text real strangers. Delivery requires both an explicit `notify` argument
+and `RAZORPAY_ALLOW_NOTIFICATIONS=1`, and the live path sends no contact details
+at all. Every ledger entry records `notificationsSent`. This is the hard-won
+lesson in [`FAILURE_STORY.md`](FAILURE_STORY.md) §7.
 There's also a signature-verified **webhook receiver** at
 `/api/razorpay/webhook` (`payment_link.paid`, `payment.captured`), so recovery
 can be *observed* event-driven rather than polled. In the dashboard, any case

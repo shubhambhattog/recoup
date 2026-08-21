@@ -90,8 +90,9 @@ Point at the Safety card.
 > Reconciliations jump —" **(point)** "— the safety machinery is doing far more
 > work. And double-charges: **still zero**.
 >
-> That holds all the way to a 50% failure rate, across all 6,000 cases in the
-> sweep. The naive baseline double-charges 48 times on the same data.
+> That holds all the way up to a 50% failure rate in the sensitivity grid, and
+> across all 6,000 cases of the main sweep. The naive baseline double-charges 48
+> times on the same data.
 >
 > It's structural, not luck: every charge carries an idempotency key, and an
 > unknown outcome is *always* reconciled before any retry."
@@ -107,9 +108,10 @@ Then click **Approve all & re-run**.
 > cooldowns, a per-customer daily cap, an incentive budget, and opt-out honoured
 > forever.
 >
-> Quiet hours are **08:00 to 19:00** — that's not my taste, that's RBI's
-> recovery-agent guideline. Complying cost me about ₹57,000 of recovery on this
-> batch. I kept it, and cited the rule next to the value in the config.
+> Customers are only ever contacted between **08:00 and 19:00** local — outside
+> that the agent stays silent. That's not my taste, that's RBI's recovery-agent
+> guideline. Complying cost me about ₹57,000 of recovery on this batch. I kept
+> it, and cited the rule next to the value in the config.
 >
 > And the human gate is real. Watch —" **(flip to Manual)** "— five high-value
 > actions, ₹35,000 to ₹87,000, just **stopped**. Net recovery drops from ₹19.05
@@ -145,8 +147,12 @@ Then click **Approve all & re-run**.
 > RBI contact window."
 
 **Optional, strong if you do it live:** open the test link, pay with card
-`4111 1111 1111 1111`, re-run `SEED=77 npm run razorpay:live`, show it reconcile
-to paid.
+`4111 1111 1111 1111`, then re-run **the same command** and show it reconcile to
+paid. Re-run with the *same* seed — a different seed generates a different case
+set and different reference ids, so it would not find your paid link.
+
+> PowerShell note: `SEED=77 npm run …` is a bash-ism and will error. Use
+> `$env:SEED=77; npm run razorpay:live` in PowerShell, or run it from Git Bash.
 
 ---
 
@@ -154,8 +160,10 @@ to paid.
 
 **On screen:** the repo README, or the green CI badge.
 
-> "Everything I showed is reproducible from a seed — clone it, run
-> `npm run recover:batch`, get these exact numbers. No API key needed.
+> "The measured results are reproducible from a seed — clone it, run
+> `npm run recover:batch`, and get these exact numbers with no API key at all.
+> The Gemini and Razorpay pieces you just saw need keys; everything the metrics
+> rest on does not.
 >
 > The safety claims aren't assertions: a fuzz suite runs the invariants under
 > randomised policies, and CI fails the build if any run ever double-charges.

@@ -1,11 +1,16 @@
 // A thin, typed wrapper over the Razorpay Node SDK (test mode).
 //
 // Only the pieces Recoup needs: create a Payment Link, look one up by our own
-// reference id (that's how we get idempotency — Razorpay rejects a duplicate
-// reference_id, so we treat the collision as "already created" instead of
-// making a second link), and fetch a link's live status (that's a real
-// reconciliation source). Everything money-moving here is idempotent by
-// construction, mirroring the guarantee the simulator models.
+// reference id, and fetch a link's live status (a real reconciliation source).
+//
+// SAFETY NOTE — notifications are OFF by default.
+// Razorpay will happily SMS/email the `customer.contact` you hand it, and keep
+// re-sending if `reminder_enable` is set. Our synthetic customers carry
+// real-FORMAT Indian mobile numbers (the emails are reserved @example.com, but
+// there is no reserved mobile range), so enabling delivery on generated data
+// means messaging real strangers. We learned this the hard way — see
+// FAILURE_STORY.md. Delivery now requires an explicit opt-in per call, and the
+// live scripts never pass a phone number at all.
 
 import Razorpay from "razorpay";
 
@@ -32,6 +37,15 @@ export function isLiveKey(): boolean {
   return id.startsWith("rzp_live_");
 }
 
+/**
+ * Master switch for outbound delivery. Even with this set, a caller must still
+ * pass `notify` explicitly — two locks, because the failure mode is messaging
+ * real people.
+ */
+export function notificationsAllowed(): boolean {
+  return process.env.RAZORPAY_ALLOW_NOTIFICATIONS === "1";
+}
+
 let client: Razorpay | null = null;
 function rzp(): Razorpay {
   const creds = getRazorpayCredentials();
@@ -53,7 +67,6 @@ export interface PaymentLinkView {
   amountPaid: number; // paise
 }
 
-// The SDK's returned link object; we only read a few fields.
 interface RawLink {
   id: string;
   short_url?: string;
@@ -63,99 +76,173 @@ interface RawLink {
   amount_paid?: number | string;
 }
 
-function toView(link: RawLink, referenceId?: string): PaymentLinkView {
+/** Note: never overwrites the link's real reference_id — a mismatch must stay visible. */
+function toView(link: RawLink): PaymentLinkView {
   return {
     id: String(link.id),
     shortUrl: String(link.short_url ?? ""),
     status: String(link.status ?? "created"),
-    referenceId: referenceId ?? link.reference_id,
+    referenceId: link.reference_id,
     amount: Number(link.amount ?? 0),
     amountPaid: Number(link.amount_paid ?? 0),
   };
 }
 
 /**
- * In-process idempotency store, keyed by our reference_id.
- *
- * Razorpay itself is the durable guarantee — it rejects a duplicate
- * reference_id — but its *list* endpoint is read-after-write eventually
- * consistent: a link created milliseconds ago may not yet appear in
- * `paymentLink.all({reference_id})`. Without this cache, an immediate retry of
- * the same step sees "duplicate" from create and "not found" from list, and
- * would surface an error for what is actually a safe, already-completed action.
- * (Found by running the live batch — see FAILURE_STORY.md.)
+ * In-process record of reference_id → link id, so repeating a step does not
+ * create a duplicate. We deliberately cache only the ID, not the link's state:
+ * status and amount_paid change when the customer pays, and a cached snapshot
+ * would report a paid link as still "created".
  */
-const linksByReference = new Map<string, PaymentLinkView>();
+const linkIdByReference = new Map<string, string>();
+const MAX_CACHED = 500;
+
+function rememberLink(referenceId: string, id: string): void {
+  if (linkIdByReference.size >= MAX_CACHED) {
+    const oldest = linkIdByReference.keys().next().value;
+    if (oldest !== undefined) linkIdByReference.delete(oldest);
+  }
+  linkIdByReference.set(referenceId, id);
+}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export async function createPaymentLink(input: {
+export interface CreateLinkInput {
   amountPaise: number;
   referenceId: string;
   description: string;
   customer: { name: string; email?: string; contact?: string };
   notes?: Record<string, string>;
-}): Promise<{ view: PaymentLinkView; idempotentReuse: boolean }> {
+  /**
+   * Outbound delivery. Defaults to NO email, NO SMS, NO reminders. Only set
+   * this for a real customer you are certain about — see the safety note above.
+   */
+  notify?: { email?: boolean; sms?: boolean };
+  reminderEnable?: boolean;
+  /** Link expiry (unix seconds). Prevents an unpaid link lingering forever. */
+  expireBy?: number;
+}
+
+export async function createPaymentLink(
+  input: CreateLinkInput,
+): Promise<{ view: PaymentLinkView; idempotentReuse: boolean }> {
   const api = rzp();
 
-  // Fast path: we already created this exact reference in this process.
-  const cached = linksByReference.get(input.referenceId);
-  if (cached) return { view: cached, idempotentReuse: true };
+  // Fast path: this reference already produced a link in this process. Fetch it
+  // fresh rather than trusting a stale snapshot.
+  const knownId = linkIdByReference.get(input.referenceId);
+  if (knownId) {
+    const live = await fetchPaymentLink(knownId).catch(() => null);
+    if (live) return { view: live, idempotentReuse: true };
+  }
 
-  try {
-    const link = await api.paymentLink.create({
-      amount: input.amountPaise,
-      currency: "INR",
-      accept_partial: false,
-      reference_id: input.referenceId,
-      description: input.description.slice(0, 2048),
-      customer: {
-        name: input.customer.name,
-        email: input.customer.email,
-        contact: input.customer.contact,
-      },
-      notify: { email: !!input.customer.email, sms: !!input.customer.contact },
-      reminder_enable: true,
-      notes: input.notes,
-    });
-    const view = toView(link as RawLink, input.referenceId);
-    linksByReference.set(input.referenceId, view);
-    return { view, idempotentReuse: false };
-  } catch (err) {
-    // A duplicate reference_id means this link already exists — return it
-    // rather than creating a second one. The list endpoint can lag behind the
-    // write, so retry briefly before giving up.
-    if (!isDuplicateReferenceError(err)) throw err;
-    for (const delay of [0, 400, 1200]) {
+  // Delivery is off unless BOTH the env switch and this call opt in.
+  const allow = notificationsAllowed();
+  const notify = {
+    email: allow && input.notify?.email === true,
+    sms: allow && input.notify?.sms === true,
+  };
+  const reminderEnable = allow && input.reminderEnable === true;
+
+  let lastErr: unknown;
+  // Retrying a create is safe precisely because reference_id is idempotent:
+  // if the first attempt did land, the retry is rejected as a duplicate and we
+  // fall through to the existence check below.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const link = await api.paymentLink.create({
+        amount: input.amountPaise,
+        currency: "INR",
+        accept_partial: false,
+        reference_id: input.referenceId,
+        description: input.description.slice(0, 2048),
+        customer: {
+          name: input.customer.name,
+          email: input.customer.email,
+          contact: input.customer.contact,
+        },
+        notify,
+        reminder_enable: reminderEnable,
+        notes: input.notes,
+        ...(input.expireBy ? { expire_by: input.expireBy } : {}),
+      });
+      const view = toView(link as RawLink);
+      rememberLink(input.referenceId, view.id);
+      return { view, idempotentReuse: false };
+    } catch (err) {
+      lastErr = err;
+      if (isRateLimited(err) && attempt < 2) {
+        await sleep(1500 * (attempt + 1));
+        continue;
+      }
+      break;
+    }
+  }
+
+  {
+    const err = lastErr;
+    // Any failure here may mean the link was actually created and we lost the
+    // response — not just an explicit duplicate. So we always ask whether it
+    // exists before concluding anything, and never re-create blindly.
+    //
+    // Razorpay's list endpoint is read-after-write eventually consistent, so
+    // give it a few chances. Each attempt is isolated: a transient list error
+    // must not abort the remaining attempts.
+    for (const delay of [0, 500, 1500, 4000]) {
       if (delay) await sleep(delay);
-      const existing = await findLinkByReference(input.referenceId);
-      if (existing) {
-        linksByReference.set(input.referenceId, existing);
-        return { view: existing, idempotentReuse: true };
+      try {
+        const existing = await findLinkByReference(input.referenceId);
+        if (existing) {
+          rememberLink(input.referenceId, existing.id);
+          return { view: existing, idempotentReuse: true };
+        }
+      } catch {
+        // keep trying — the lookup failing tells us nothing about the link
       }
     }
-    throw err;
+    throw asError(err, `Failed to create payment link for reference ${input.referenceId}`);
   }
 }
 
-/** Razorpay reports an already-used reference_id as a 400 BAD_REQUEST_ERROR. */
-function isDuplicateReferenceError(err: unknown): boolean {
+/** Razorpay throttles bursts; a 429 is transient and worth waiting out. */
+function isRateLimited(err: unknown): boolean {
   const e = err as { statusCode?: number; error?: { description?: string } } | undefined;
-  const desc = e?.error?.description ?? "";
-  return e?.statusCode === 400 && /reference_id/i.test(desc) && /already exists/i.test(desc);
+  return e?.statusCode === 429 || /too many requests/i.test(e?.error?.description ?? "");
 }
 
+/** The SDK rejects with a plain object; make it a real Error so callers can log it. */
+function asError(err: unknown, context: string): Error {
+  if (err instanceof Error) return err;
+  const e = err as { statusCode?: number; error?: { code?: string; description?: string } };
+  const detail = e?.error?.description ?? JSON.stringify(err);
+  const out = new Error(`${context}: ${detail}`);
+  Object.assign(out, { statusCode: e?.statusCode, razorpayError: e?.error });
+  return out;
+}
+
+/**
+ * Look a link up by OUR reference id. Verifies the returned link really carries
+ * that reference — the SDK does not type this filter, so if Razorpay ever
+ * ignored it we would otherwise adopt an unrelated customer's link as our own.
+ */
 export async function findLinkByReference(referenceId: string): Promise<PaymentLinkView | null> {
   const api = rzp();
   const res = await api.paymentLink.all({
     reference_id: referenceId,
   } as unknown as Parameters<typeof api.paymentLink.all>[0]);
-  const link = res?.payment_links?.[0] as RawLink | undefined;
-  return link ? toView(link, referenceId) : null;
+  const links = (res?.payment_links ?? []) as RawLink[];
+  const match = links.find((l) => l.reference_id === referenceId);
+  return match ? toView(match) : null;
 }
 
 export async function fetchPaymentLink(id: string): Promise<PaymentLinkView | null> {
   const api = rzp();
   const link = (await api.paymentLink.fetch(id)) as RawLink | null;
+  return link ? toView(link) : null;
+}
+
+export async function cancelPaymentLink(id: string): Promise<PaymentLinkView | null> {
+  const api = rzp();
+  const link = (await api.paymentLink.cancel(id)) as RawLink | null;
   return link ? toView(link) : null;
 }

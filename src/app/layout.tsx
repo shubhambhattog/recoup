@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -18,7 +19,10 @@ export const metadata: Metadata = {
     "A bounded revenue-recovery agent for Razorpay merchants: recovers more money than naive retries, and can't misbehave with money — every action bounded, gated, idempotent, and auditable.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+// Typed explicitly rather than with Next's generated `LayoutProps<"/">` global,
+// which only exists after a build — this keeps `npm run typecheck` working on a
+// fresh clone (and in CI) before anything has been built.
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="en"

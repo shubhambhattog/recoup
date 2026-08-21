@@ -7,6 +7,10 @@
 > Recoup recovers **more** money than naive retries, and it **cannot** misbehave
 > with money — every action is bounded, gated, idempotent, and auditable.
 
+**▶ Live demo: https://recoup-shubhambhattog.vercel.app** — runs the full batch in
+your browser, no keys needed. Try the chaos sliders, flip the human gate to
+manual, and press ▶ Replay.
+
 Recoup detects revenue at risk (failed payments, failed subscriptions, abandoned
 checkouts, overdue B2B invoices), diagnoses the root cause, chooses the right
 intervention, and executes a **bounded** recovery workflow on Razorpay test-mode
@@ -45,7 +49,7 @@ reconciliation machinery visibly does more work:
 A single batch (seed 42, 120 cases) in detail: **₹39.3L at risk → ₹19.0L net
 recovered (74/120)**, 3.4× the baseline like-for-like plus **₹15.6L unlocked**
 from carts and invoices the baseline can't touch, **0 double-charges** with 5
-lost confirmations reconciled, and a **1,000-event replayable ledger**.
+lost confirmations reconciled, and a **790-event replayable ledger**.
 
 Every assumption behind these numbers is documented in
 **[`SIMULATION.md`](SIMULATION.md)** — including what we are *not* claiming.

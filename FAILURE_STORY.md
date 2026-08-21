@@ -141,7 +141,41 @@ worker couldn't fork.
 change. The lesson I actually took: *when a failure reproduces in one runtime and
 not another, stop reading your own diff.*
 
-### 6. A lint rule that was right
+### 6. The bug the simulator could never have shown me
+
+**Symptom.** The Razorpay integration passed every test I had, and the one-link
+demo worked perfectly — create, prove idempotency, reconcile. Then I ran the
+*live batch* for the first time, driving real test-mode APIs with the real
+decision loop. It created the first payment link fine and crashed on the second
+call: `BAD_REQUEST_ERROR — payment link with given reference_id
+case_0001-retry_payment-0 already exists`.
+
+**Root cause.** My idempotency logic was: try to create; if Razorpay rejects the
+duplicate `reference_id`, look the existing link up with
+`paymentLink.all({reference_id})` and return that instead. Sound design — except
+Razorpay's *list* endpoint is read-after-write eventually consistent. The link I
+had created milliseconds earlier was not in the list yet, so the lookup returned
+nothing and I re-threw the duplicate error. A **safe, already-completed action
+was being reported as a failure.**
+
+I only found it because I probed the API directly instead of guessing: querying
+the same filter a minute later returned the link correctly, which ruled out "the
+filter doesn't work" and pointed straight at timing. My single-link demo had
+passed by pure luck — enough wall-clock had elapsed between its two calls.
+
+**Fix.** Three changes: an **in-process idempotency store keyed by
+`reference_id`** so a repeat of the same step returns the known link without
+touching the list endpoint at all; **retry the list lookup with backoff** as the
+durable cross-process fallback; and **only swallow genuine duplicate-reference
+errors** (matched on status code *and* message) instead of treating every failure
+as a duplicate — the original code would have masked real errors.
+
+**The lesson.** This is exactly the class of bug an executor that has never
+executed cannot reveal. The simulator's idempotency store is instantly
+consistent; the real one is not. Everything I could measure in simulation was
+green while the real integration was broken.
+
+### 7. A lint rule that was right
 
 Fetching the first batch in a `useEffect` on mount tripped
 `react-hooks/set-state-in-effect`. The lazy fix is a disable comment. The correct

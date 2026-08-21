@@ -49,6 +49,14 @@ export interface RunOptions {
   policy: RecoveryPolicy;
   llm?: Llm;
   ledger?: Ledger;
+  /**
+   * Cases a human has explicitly approved. When the policy's mock approver is
+   * off (`autoApproveInSim: false`), a high-value money action is allowed only
+   * if its case id appears here — otherwise the case parks as `awaiting_human`.
+   * This is the real human-in-the-loop gate, and it is deterministic: re-running
+   * with the approval set replays the same batch with those actions permitted.
+   */
+  approvedCaseIds?: ReadonlySet<string>;
   /** Pulls the double-charge count from the simulated world at the end. */
   getDoubleCharges?: () => number;
 }
@@ -68,7 +76,9 @@ export async function runRecovery(
     policy,
     incentiveSpentPaise: 0,
     contactsByCustomerDay: new Map(),
-    approve: () => policy.autoApproveInSim, // mock approver in sim; real gate in prod
+    // In sim a mock approver can auto-approve so a headless batch completes.
+    // With it off, only cases a human actually approved get through.
+    approve: (c) => policy.autoApproveInSim || (options.approvedCaseIds?.has(c.id) ?? false),
   };
   const safety: SafetyStats = {
     doubleCharges: 0,

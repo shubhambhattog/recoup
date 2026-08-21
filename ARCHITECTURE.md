@@ -38,12 +38,30 @@ explains how the pieces fit and why they're shaped this way.
 | `engine/executor` | The Sim executor (idempotent retries, chaos handling) |
 | `engine/razorpay-executor` | The real executor (Razorpay test-mode Payment Links) |
 | `engine/baseline` | The naive "retry 3× now" comparison |
-| `engine/run` | `runScenario` — the shared entry point (CLI + web) |
+| `engine/run` | `runScenario` — the shared entry point (CLI + sweep + tests + web) |
 | `sim/world` | Hidden ground truth + chaos + idempotency store |
-| `sim/generate` | Seeded synthetic batch consistent with each hidden persona |
-| `metrics/report` | The scorecard + baseline summary |
+| `sim/generate` | Seeded synthetic batch consistent with each hidden persona, plus the hidden true root cause used only for scoring |
+| `metrics/report` | The scorecard + baseline summary + AI cost/ROI + payments segment |
+| `metrics/diagnosis` | Grades root-cause calls against hidden truth, split by path |
 | `ai/*` | Provider-agnostic LLM (Gemini default) behind the narrow `Llm` interface |
 | `razorpay/client` | Typed wrapper: create link (idempotent), reconcile |
+| `engine/razorpay-executor` | The real executor — same interface, real test-mode links |
+| `tests/*` | Guardrail fuzz suite + engine tests (`node:test` via tsx) |
+
+## Evidence pipeline
+
+The claims are only worth the machinery that checks them, so four independent
+things verify different parts:
+
+| Command | What it establishes |
+| --- | --- |
+| `npm run recover:batch` | One batch end to end + the full audit ledger |
+| `npm run sweep` | 50 seeds (6,000 cases) + a chaos sensitivity grid; **exits non-zero if any run double-charges** |
+| `npm test` | Invariants hold under *randomized policies* (attempt caps, cooldowns, budgets, thresholds) — safety isn't a property of our chosen numbers |
+| `npm run eval:diagnosis` | Diagnosis accuracy vs hidden truth, per classifier path |
+
+CI runs all four on every push (`.github/workflows/ci.yml`), so a regression that
+quietly breaks a safety property fails the build rather than shipping.
 
 ## The loop (`engine/loop.ts`)
 
@@ -113,6 +131,20 @@ been tried. Highlights that create the gap over the baseline:
 4. contact action: max contacts, quiet hours (defer), per-customer daily cap (defer)
 5. incentive: per-case cap, batch budget
 6. high-value: human approval
+
+Note the distinction between a **deferral** and a **stop**: quiet hours and the
+daily contact cap reschedule the same action to the next legal moment, while
+opt-out, the deadline and the attempt caps end the case. That distinction is why
+compliance costs recovery *time* rather than silently dropping cases.
+
+### The human gate is real, not mocked
+
+With `humanGate: "manual"`, a money action on a case at or above the approval
+threshold does not execute — the case parks as `awaiting_human` and appears in the
+dashboard's Approvals queue. Approving replays the batch with those case ids in
+`approvedCaseIds`, and only those actions proceed. Because the whole run is
+deterministic, "approve and re-run" is an exact replay with one input changed —
+which is also how the approval decision itself stays auditable.
 
 ## The simulator (`sim/world.ts`)
 

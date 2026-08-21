@@ -9,8 +9,12 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "recover:batch": "tsx src/scripts/run-batch.ts",
+    "sweep": "tsx src/scripts/sweep.ts",
+    "test": "tsx --test src/tests/engine.test.ts src/tests/guardrails.test.ts",
+    "eval:diagnosis": "tsx src/scripts/eval-diagnosis.ts",
     "llm:smoke": "tsx src/scripts/llm-smoke.ts",
-    "razorpay:demo": "tsx src/scripts/razorpay-demo.ts"
+    "razorpay:demo": "tsx src/scripts/razorpay-demo.ts",
+    "razorpay:live": "tsx src/scripts/razorpay-live-batch.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.47",

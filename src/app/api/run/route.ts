@@ -2,7 +2,7 @@
 // (report, baseline, final case states, and the complete audit ledger).
 // Deterministic and fast; the dashboard calls this on every "Run".
 
-import { runScenario } from "@/lib/engine/run";
+import { runScenario, type HumanGate } from "@/lib/engine/run";
 import { DEFAULT_WORLD_CONFIG } from "@/lib/sim/world";
 
 export const runtime = "nodejs";
@@ -12,6 +12,8 @@ interface Body {
   seed?: number;
   n?: number;
   chaos?: { lostConfirmationP?: number; apiErrorP?: number; baseOptOutP?: number };
+  humanGate?: HumanGate;
+  approvedCaseIds?: string[];
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -29,7 +31,13 @@ export async function POST(req: Request): Promise<Response> {
     baseOptOutP: clamp(body.chaos?.baseOptOutP ?? DEFAULT_WORLD_CONFIG.baseOptOutP, 0, 0.4),
   };
 
-  const result = await runScenario({ seed, n, worldConfig });
+  const result = await runScenario({
+    seed,
+    n,
+    worldConfig,
+    humanGate: body.humanGate === "manual" ? "manual" : "auto",
+    approvedCaseIds: Array.isArray(body.approvedCaseIds) ? body.approvedCaseIds.slice(0, 300) : [],
+  });
   return Response.json(result);
 }
 

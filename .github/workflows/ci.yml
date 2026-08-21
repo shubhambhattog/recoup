@@ -1,0 +1,51 @@
+name: CI
+
+# Recoup's safety claims ("0 double-charges, never contacts after opt-out,
+# never spends past budget") are only worth what verifies them. CI runs the
+# fuzz suite on every push, plus a multi-seed sweep that fails the build if any
+# safety invariant is violated in any run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests (guardrail fuzz + engine)
+        run: npm test
+
+      - name: Safety sweep (fails if any run double-charges)
+        run: npm run sweep
+        env:
+          SEEDS: 25
+          N: 100
+
+      - name: Production build
+        run: npm run build
+
+      - name: Upload evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recoup-evidence
+          path: artifacts/
+          if-no-files-found: ignore

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ScenarioResult } from "@/lib/engine/run";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { ScenarioResult, HumanGate } from "@/lib/engine/run";
 import type { AtRiskCase } from "@/lib/domain/types";
 import type { LedgerEvent, LedgerEventType } from "@/lib/ledger/ledger";
 import { formatINR, formatINRCompact } from "@/lib/core/money";
@@ -54,9 +54,12 @@ const BUCKET_COLOR: Record<Bucket, string> = {
   inflight: "var(--amber)",
 };
 
-const fmtT = (at: number) => `t+${Math.round(at / 3_600_000)}h`;
+const HOUR_MS = 3_600_000;
+const fmtT = (at: number) => `t+${Math.round(at / HOUR_MS)}h`;
+const fmtDay = (at: number) => `day ${Math.floor(at / (24 * HOUR_MS)) + 1}, ${String(Math.floor((at / HOUR_MS) % 24)).padStart(2, "0")}:00`;
 const shortId = (id: string) => `#${id.replace(/[^0-9]/g, "").replace(/^0+/, "")}`;
 const sliderVal = (v: number | readonly number[]) => (typeof v === "number" ? v : v[0]);
+const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 // ---------- primitives ----------
 
@@ -116,39 +119,56 @@ function MiniStat({ label, value, accent }: { label: string; value: ReactNode; a
 
 // ---------- main ----------
 
-export default function Dashboard() {
-  const [data, setData] = useState<ScenarioResult | null>(null);
+function firstInterestingCase(sc: ScenarioResult): string | null {
+  // Open on a reconciliation — the money-critical failure handled well.
+  const rec = sc.ledger.find(
+    (e) => e.type === "reconciliation" && (e.data as { result?: string })?.result === "success",
+  );
+  return rec?.caseId ?? sc.cases[0]?.id ?? null;
+}
+
+export default function Dashboard({ initial }: { initial: ScenarioResult }) {
+  const [data, setData] = useState<ScenarioResult>(initial);
   const [loading, setLoading] = useState(false);
   const [seed, setSeed] = useState(42);
   const [n, setN] = useState(120);
   const [lostP, setLostP] = useState(0.14);
   const [apiP, setApiP] = useState(0.1);
+  const [gate, setGate] = useState<HumanGate>("auto");
+  const [approvals, setApprovals] = useState<string[]>([]);
   const [filter, setFilter] = useState<Bucket | "all">("all");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(() => firstInterestingCase(initial));
 
-  const run = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ seed, n, chaos: { lostConfirmationP: lostP, apiErrorP: apiP } }),
-      });
-      const json: ScenarioResult = await res.json();
-      setData(json);
-      const rec = json.ledger.find(
-        (e) => e.type === "reconciliation" && (e.data as { result?: string })?.result === "success",
-      );
-      setSelected(rec?.caseId ?? json.cases[0]?.id ?? null);
-    } finally {
-      setLoading(false);
-    }
-  }, [seed, n, lostP, apiP]);
+  // replay
+  const [replayT, setReplayT] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
 
-  useEffect(() => {
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const run = useCallback(
+    async (opts?: { gate?: HumanGate; approvals?: string[] }) => {
+      setLoading(true);
+      setPlaying(false);
+      setReplayT(null);
+      try {
+        const res = await fetch("/api/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            seed,
+            n,
+            chaos: { lostConfirmationP: lostP, apiErrorP: apiP },
+            humanGate: opts?.gate ?? gate,
+            approvedCaseIds: opts?.approvals ?? approvals,
+          }),
+        });
+        const json: ScenarioResult = await res.json();
+        setData(json);
+        setSelected(firstInterestingCase(json));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [seed, n, lostP, apiP, gate, approvals],
+  );
 
   const caseById = useMemo(() => {
     const m = new Map<string, AtRiskCase>();
@@ -160,6 +180,60 @@ export default function Dashboard() {
     if (!data || !selected) return [];
     return data.ledger.filter((e) => e.caseId === selected).sort((a, b) => a.seq - b.seq);
   }, [data, selected]);
+
+  // ---- replay derivation ----
+  const span = useMemo(() => {
+    if (!data?.ledger.length) return null;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const e of data.ledger) {
+      if (e.at < lo) lo = e.at;
+      if (e.at > hi) hi = e.at;
+    }
+    return { lo, hi };
+  }, [data]);
+
+  const replay = useMemo(() => {
+    if (!data || replayT === null) return null;
+    const stateAt = new Map<string, Bucket | "pending">();
+    let recovered = 0;
+    let money = 0;
+    const feed: LedgerEvent[] = [];
+    for (const e of data.ledger) {
+      if (e.at > replayT) continue;
+      if (e.type === "case_detected") stateAt.set(e.caseId, "inflight");
+      else if (e.type === "recovered") {
+        if (stateAt.get(e.caseId) !== "recovered") {
+          recovered++;
+          money += Number((e.data as { gross?: number } | undefined)?.gross ?? 0);
+        }
+        stateAt.set(e.caseId, "recovered");
+      } else if (e.type === "exception") {
+        stateAt.set(e.caseId, /escalated/.test(e.summary) ? "escalated" : "stopped");
+      }
+      feed.push(e);
+    }
+    return { stateAt, recovered, money, feed: feed.slice(-6).reverse() };
+  }, [data, replayT]);
+
+  // playback loop
+  const rafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!playing || !span) return;
+    const step = Math.max(1, (span.hi - span.lo) / 220);
+    const id = window.setInterval(() => {
+      setReplayT((t) => {
+        const next = (t ?? span.lo) + step;
+        if (next >= span.hi) {
+          setPlaying(false);
+          return span.hi;
+        }
+        return next;
+      });
+    }, 45);
+    return () => window.clearInterval(id);
+  }, [playing, span]);
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
   const buckets = useMemo(() => {
     const b: Record<Bucket, AtRiskCase[]> = { recovered: [], escalated: [], stopped: [], inflight: [] };
@@ -173,21 +247,32 @@ export default function Dashboard() {
     return [...list].sort((a, b) => b.amount - a.amount);
   }, [data, buckets, filter]);
 
+  const parked = useMemo(
+    () => (data?.cases ?? []).filter((c) => (c.exceptionReason ?? "").includes("awaiting_human")),
+    [data],
+  );
+
   const r = data?.report;
   const bl = data?.baseline;
 
   const compare = useMemo(() => {
     if (!r || !bl) return null;
-    const payGross = r.byType
-      .filter((t) => t.type === "payment_failed" || t.type === "subscription_failed")
-      .reduce((s, t) => s + t.grossRecovered, 0);
-    const payTotal = r.byType
-      .filter((t) => t.type === "payment_failed" || t.type === "subscription_failed")
-      .reduce((s, t) => s + t.recovered, 0);
-    const mult = bl.grossRecoveredPaise > 0 ? payGross / bl.grossRecoveredPaise : 0;
-    const unlocked = r.grossRecoveredPaise - payGross;
-    return { payGross, payTotal, mult, unlocked };
+    const seg = r.paymentsSegment;
+    const mult = bl.grossRecoveredPaise > 0 ? seg.grossRecoveredPaise / bl.grossRecoveredPaise : 0;
+    return { seg, mult, unlocked: r.grossRecoveredPaise - seg.grossRecoveredPaise };
   }, [r, bl]);
+
+  const approveAll = () => {
+    const ids = parked.map((c) => c.id);
+    setApprovals(ids);
+    run({ approvals: ids });
+  };
+
+  const setGateAndRun = (g: HumanGate) => {
+    setGate(g);
+    setApprovals([]);
+    run({ gate: g, approvals: [] });
+  };
 
   return (
     <div className="mx-auto flex min-h-screen max-w-[1440px] flex-col gap-5 px-5 py-6 lg:px-8">
@@ -237,7 +322,7 @@ export default function Dashboard() {
               <Slider min={0} max={50} step={1} value={[Math.round(apiP * 100)]} onValueChange={(v) => setApiP(sliderVal(v) / 100)} />
             </div>
           </div>
-          <Button onClick={run} disabled={loading} className="h-10 px-4 font-semibold">
+          <Button onClick={() => run()} disabled={loading} className="h-10 px-4 font-semibold">
             {loading ? "Running…" : "Run batch"}
           </Button>
         </div>
@@ -251,17 +336,18 @@ export default function Dashboard() {
         <>
           {/* Hero: money + safety */}
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-            {/* Recovered hero */}
             <Card className={`${CARD} relative flex flex-col gap-5 p-6 lg:col-span-8`}>
               <div className="absolute inset-x-0 top-0 h-px" style={{ background: "linear-gradient(90deg, transparent, var(--emerald), transparent)", opacity: 0.6 }} />
               <div className="flex flex-wrap items-end justify-between gap-4">
                 <div className="flex flex-col gap-1.5">
                   <Label>Net recovered</Label>
                   <div className="mono text-[46px] font-semibold leading-none tracking-tight" style={{ color: "var(--emerald)" }}>
-                    {formatINRCompact(r.netRecoveredPaise)}
+                    {formatINRCompact(replay ? replay.money : r.netRecoveredPaise)}
                   </div>
                   <span className="text-[12.5px] text-muted-foreground">
-                    {formatINR(r.grossRecoveredPaise)} recovered of {formatINR(r.totalAtRiskPaise)} at risk
+                    {replay
+                      ? `${replay.recovered} recovered so far · replaying ${fmtDay(replayT!)}`
+                      : `${formatINR(r.grossRecoveredPaise)} recovered of ${formatINR(r.totalAtRiskPaise)} at risk`}
                   </span>
                 </div>
                 <Badge
@@ -273,17 +359,16 @@ export default function Dashboard() {
                 </Badge>
               </div>
 
-              <Track value={r.grossRecoveredPaise} max={r.totalAtRiskPaise} color="var(--emerald)" className="h-2" />
+              <Track value={replay ? replay.money : r.grossRecoveredPaise} max={r.totalAtRiskPaise} color="var(--emerald)" className="h-2" />
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-4">
-                <MiniStat label="Recovery rate" value={`${(r.recoveryRate * 100).toFixed(1)}%`} />
+                <MiniStat label="Recovery rate" value={pct(r.recoveryRate)} />
                 <MiniStat label="Recovered" value={`${r.recovered} / ${r.totalCases}`} />
                 <MiniStat label="Unlocked vs baseline" value={`+${formatINRCompact(compare.unlocked)}`} accent="var(--blue)" />
                 <MiniStat label="Avg time to recover" value={`${r.avgHoursToRecovery.toFixed(0)}h`} />
               </div>
             </Card>
 
-            {/* Safety hero */}
             <Card className={`${CARD} flex flex-col gap-4 p-6 lg:col-span-4`}>
               <div className="flex items-center justify-between">
                 <Label>Safety — bounded &amp; gated</Label>
@@ -308,6 +393,197 @@ export default function Dashboard() {
               </div>
             </Card>
           </div>
+
+          {/* Evidence strip: diagnosis accuracy · AI usage · human gate */}
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+            {r.diagnosis && (
+              <Card className={`${CARD} flex flex-col gap-3 p-5`}>
+                <div className="flex items-center justify-between">
+                  <Label>Diagnosis accuracy</Label>
+                  <span className="text-[10px] text-faint">vs hidden ground truth</span>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="mono text-[26px] font-semibold leading-none tracking-tight">{pct(r.diagnosis.accuracy)}</span>
+                  <span className="text-[12px] text-muted-foreground">{r.diagnosis.correct}/{r.diagnosis.total} correct</span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {r.diagnosis.byPath.map((p) => (
+                    <div key={p.path} className="flex flex-col gap-1">
+                      <div className="flex justify-between text-[11.5px]">
+                        <span className="text-muted-foreground">{p.path === "rules" ? "rules (error codes)" : "text path (LLM/heuristic)"}</span>
+                        <span className="mono">{pct(p.accuracy)}</span>
+                      </div>
+                      <Track value={p.correct} max={p.total} color={p.path === "rules" ? "var(--emerald)" : "var(--blue)"} />
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            <Card className={`${CARD} flex flex-col gap-3 p-5`}>
+              <div className="flex items-center justify-between">
+                <Label>AI usage</Label>
+                <span className="text-[10px] text-faint">right tool, right place</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="mono text-[26px] font-semibold leading-none tracking-tight">{pct(r.ai.rulesOnly / r.totalCases)}</span>
+                <span className="text-[12px] text-muted-foreground">answered with no model at all</span>
+              </div>
+              <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+                {r.ai.llmEligible} of {r.totalCases} cases carry no error code — those are the only ones a model sees.
+                The LLM never decides or authorises a money action.
+              </p>
+              <Separator />
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="text-muted-foreground">Model calls · cost</span>
+                <span className="mono">{r.ai.llmCalls} · {formatINR(r.ai.llmCostPaise)}</span>
+              </div>
+            </Card>
+
+            <Card className={`${CARD} flex flex-col gap-3 p-5`}>
+              <div className="flex items-center justify-between">
+                <Label>Human gate</Label>
+                <div className="flex gap-1">
+                  {(["auto", "manual"] as const).map((g) => (
+                    <Button
+                      key={g}
+                      size="sm"
+                      variant={gate === g ? "secondary" : "ghost"}
+                      aria-pressed={gate === g}
+                      onClick={() => setGateAndRun(g)}
+                      disabled={loading}
+                      className="h-6 px-2 text-[10.5px] capitalize"
+                    >
+                      {g}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="mono text-[26px] font-semibold leading-none tracking-tight" style={{ color: parked.length ? "var(--amber)" : undefined }}>
+                  {parked.length}
+                </span>
+                <span className="text-[12px] text-muted-foreground">awaiting approval</span>
+              </div>
+              <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+                Money actions on cases ≥ {formatINRCompact(2_500_000)} need a human. In <span className="text-foreground">manual</span> mode the
+                agent parks them instead of acting.
+              </p>
+              {parked.length > 0 && (
+                <Button size="sm" onClick={approveAll} disabled={loading} className="h-8 text-[12px]">
+                  Approve {parked.length} &amp; re-run
+                </Button>
+              )}
+              {gate === "manual" && parked.length === 0 && approvals.length > 0 && (
+                <span className="text-[11px]" style={{ color: "var(--emerald)" }}>
+                  ✓ {approvals.length} approved — actions proceeded
+                </span>
+              )}
+            </Card>
+          </div>
+
+          {/* Approvals queue */}
+          {parked.length > 0 && (
+            <Panel
+              title="Approvals queue — high-value money actions held for a human"
+              right={
+                <Button size="sm" onClick={approveAll} disabled={loading} className="h-7 text-[11px]">
+                  Approve all &amp; re-run
+                </Button>
+              }
+              bodyClass="px-5 pb-5"
+            >
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {parked.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-3 rounded-lg border bg-card/40 p-3">
+                    <div className="min-w-0">
+                      <div className="mono text-[14px] font-semibold" style={{ color: "var(--amber)" }}>{formatINR(c.amount)}</div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {c.customer.name} · {c.diagnosis?.rootCause}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0 text-[11px]"
+                      disabled={loading}
+                      onClick={() => {
+                        const ids = [...new Set([...approvals, c.id])];
+                        setApprovals(ids);
+                        run({ approvals: ids });
+                      }}
+                    >
+                      Approve
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+
+          {/* Replay bar */}
+          {span && (
+            <Card className={`${CARD} flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:gap-5`}>
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  variant={playing ? "secondary" : "outline"}
+                  className="h-8 w-20 text-[12px]"
+                  onClick={() => {
+                    if (replayT === null || replayT >= span.hi) setReplayT(span.lo);
+                    setPlaying((p) => !p);
+                  }}
+                >
+                  {playing ? "❚❚ Pause" : "▶ Replay"}
+                </Button>
+                <div className="flex flex-col">
+                  <Label>Replay the batch</Label>
+                  <span className="mono text-[11px] text-muted-foreground">
+                    {replayT === null ? "showing final state" : fmtDay(replayT)}
+                  </span>
+                </div>
+              </div>
+              <div className="flex-1">
+                <Slider
+                  min={span.lo}
+                  max={span.hi}
+                  step={Math.max(1, (span.hi - span.lo) / 400)}
+                  value={[replayT ?? span.hi]}
+                  onValueChange={(v) => {
+                    setPlaying(false);
+                    setReplayT(sliderVal(v));
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                {replay && (
+                  <span className="mono text-[11px] text-muted-foreground">
+                    <span style={{ color: "var(--emerald)" }}>{replay.recovered}</span> recovered · {formatINRCompact(replay.money)}
+                  </span>
+                )}
+                {replayT !== null && (
+                  <Button size="sm" variant="ghost" className="h-8 text-[11px] text-muted-foreground" onClick={() => { setPlaying(false); setReplayT(null); }}>
+                    Reset
+                  </Button>
+                )}
+              </div>
+            </Card>
+          )}
+
+          {/* Live event feed during replay */}
+          {replay && replay.feed.length > 0 && (
+            <Card className={`${CARD} flex flex-col gap-1.5 px-5 py-3`}>
+              {replay.feed.map((e) => (
+                <div key={e.seq} className="flex items-baseline gap-2 text-[11.5px]">
+                  <span className="mono w-14 shrink-0 text-faint">{fmtT(e.at)}</span>
+                  <span className="w-24 shrink-0 font-semibold uppercase tracking-wide" style={{ color: EVENT_COLOR[e.type], fontSize: 10 }}>
+                    {e.type.replace(/_/g, " ")}
+                  </span>
+                  <span className="truncate text-muted-foreground">{e.summary}</span>
+                </div>
+              ))}
+            </Card>
+          )}
 
           {/* Main: board + trace */}
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
@@ -339,7 +615,13 @@ export default function Dashboard() {
               <ScrollArea className="max-h-[512px]">
                 <div className="grid grid-cols-1 gap-2.5 px-5 pb-5 sm:grid-cols-2 xl:grid-cols-3">
                   {visibleCases.map((c) => (
-                    <CaseCard key={c.id} c={c} active={selected === c.id} onClick={() => setSelected(c.id)} />
+                    <CaseCard
+                      key={c.id}
+                      c={c}
+                      active={selected === c.id}
+                      replayState={replay?.stateAt.get(c.id)}
+                      onClick={() => setSelected(c.id)}
+                    />
                   ))}
                 </div>
               </ScrollArea>
@@ -367,8 +649,8 @@ export default function Dashboard() {
                 Like-for-like — payments &amp; subscriptions only, the cases a naive retry can even touch.
               </p>
               <div className="flex flex-col gap-3">
-                <CompareRow label="Recoup" sub={`${compare.payTotal} recovered`} value={compare.payGross} max={compare.payGross} color="var(--emerald)" />
-                <CompareRow label="Naive baseline" sub={`${bl.recovered} recovered`} value={bl.grossRecoveredPaise} max={compare.payGross} color="var(--faint)" />
+                <CompareRow label="Recoup" sub={`${compare.seg.recovered} recovered`} value={compare.seg.grossRecoveredPaise} max={compare.seg.grossRecoveredPaise} color="var(--emerald)" />
+                <CompareRow label="Naive baseline" sub={`${bl.recovered} recovered`} value={bl.grossRecoveredPaise} max={compare.seg.grossRecoveredPaise} color="var(--faint)" />
               </div>
               <Separator className="my-4" />
               <div className="flex items-center justify-between text-[13px]">
@@ -430,16 +712,31 @@ function SafetyCheck({ label, value, okAnyValue, note }: { label: string; value:
   );
 }
 
-function CaseCard({ c, active, onClick }: { c: AtRiskCase; active: boolean; onClick: () => void }) {
+function CaseCard({
+  c,
+  active,
+  replayState,
+  onClick,
+}: {
+  c: AtRiskCase;
+  active: boolean;
+  replayState?: Bucket | "pending";
+  onClick: () => void;
+}) {
   const bk = bucketOf(c);
-  const color = BUCKET_COLOR[bk];
+  const shown = replayState ?? bk;
+  const pending = shown === "pending";
+  const color = pending ? "var(--faint)" : BUCKET_COLOR[shown as Bucket];
   return (
     <button
       onClick={onClick}
-      className="group flex items-stretch gap-3 rounded-lg border bg-card/40 p-3 text-left transition-colors hover:border-foreground/20 hover:bg-card"
-      style={active ? { borderColor: color, background: "color-mix(in oklch, var(--card) 92%, transparent)" } : undefined}
+      className="group flex items-stretch gap-3 rounded-lg border bg-card/40 p-3 text-left transition-all hover:border-foreground/20 hover:bg-card"
+      style={{
+        ...(active ? { borderColor: color } : undefined),
+        opacity: replayState === undefined ? 1 : pending ? 0.35 : 1,
+      }}
     >
-      <span className="w-0.5 shrink-0 rounded-full" style={{ background: color, opacity: active ? 1 : 0.6 }} />
+      <span className="w-0.5 shrink-0 rounded-full transition-colors" style={{ background: color, opacity: active ? 1 : 0.6 }} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-center justify-between gap-2">
           <span className="mono text-[15px] font-semibold tracking-tight">{formatINRCompact(c.amount)}</span>

@@ -4,16 +4,23 @@
 // carry Razorpay-shaped error fields (rules path); abandoned carts and overdue
 // invoices carry only free text (LLM/heuristic path). Fully seeded → identical
 // batches every run.
+//
+// Each archetype also records the TRUE root cause. The agent never sees it; it
+// exists so diagnosis accuracy can be scored against ground truth (see
+// `metrics/diagnosis.ts` and `npm run eval:diagnosis`). Being able to grade our
+// own diagnosis is the whole reason the simulator owns the truth.
 
 import { makeRng, type Rng } from "@/lib/core/rng";
 import { rupees } from "@/lib/core/money";
 import { DAY, HOUR } from "@/lib/core/time";
-import type { AtRiskCase, Customer, FailureSignal, Millis } from "@/lib/domain/types";
+import type { AtRiskCase, Customer, FailureSignal, Millis, RootCause } from "@/lib/domain/types";
 import type { Persona } from "@/lib/sim/world";
 
 export interface GeneratedBatch {
   cases: AtRiskCase[];
   truth: Map<string, Persona>;
+  /** Hidden ground-truth root cause per case — for scoring diagnosis only. */
+  truthRootCause: Map<string, RootCause>;
 }
 
 const FIRST = [
@@ -42,16 +49,19 @@ function makeCustomer(rng: Rng, i: number): Customer {
   };
 }
 
+type Built = {
+  type: AtRiskCase["type"];
+  signal: FailureSignal;
+  amount: number; // paise
+  method: AtRiskCase["originalMethod"];
+  dueAt?: Millis;
+  persona: Persona;
+  truthRootCause: RootCause;
+};
+
 type Archetype = {
   weight: number;
-  build: (rng: Rng, createdAt: Millis) => {
-    type: AtRiskCase["type"];
-    signal: FailureSignal;
-    amount: number; // paise
-    method: AtRiskCase["originalMethod"];
-    dueAt?: Millis;
-    persona: Persona;
-  };
+  build: (rng: Rng, createdAt: Millis) => Built;
 };
 
 // Occasionally a large-ticket payment so the human-approval gate is exercised.
@@ -68,6 +78,7 @@ const ARCHETYPES: Archetype[] = [
       amount: payAmount(rng),
       method: "card",
       persona: { kind: "funds_on_date", fundsAt: t + rng.int(12, 96) * HOUR + (rng.bool(0.15) ? 12 * DAY : 0) },
+      truthRootCause: "insufficient_funds",
     }),
   },
   {
@@ -78,6 +89,7 @@ const ARCHETYPES: Archetype[] = [
       amount: payAmount(rng),
       method: "netbanking",
       persona: { kind: "transient", clearsAt: t + rng.int(0, 8) * HOUR },
+      truthRootCause: "bank_downtime",
     }),
   },
   {
@@ -88,16 +100,18 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(200, 5_000)),
       method: "upi",
       persona: { kind: "transient", clearsAt: t + rng.int(0, 4) * HOUR },
+      truthRootCause: "gateway_error",
     }),
   },
   {
     weight: 8, // expired card — only a method-switch link works
-    build: (rng, t) => ({
+    build: (rng) => ({
       type: "payment_failed",
       signal: { reason: "card_expired", source: "customer", method: "card" },
       amount: rupees(rng.int(300, 6_000)),
       method: "card",
       persona: { kind: "needs_new_method", reachable: rng.bool(0.75), respondP: rng.next() * 0.3 + 0.5 },
+      truthRootCause: "card_expired",
     }),
   },
   {
@@ -108,6 +122,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(500, 8_000)),
       method: "card",
       persona: { kind: "dead" },
+      truthRootCause: "risk_declined",
     }),
   },
   {
@@ -118,6 +133,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(300, 5_000)),
       method: "card",
       persona: { kind: "transient", clearsAt: t + rng.int(0, 5) * HOUR },
+      truthRootCause: "authentication_failed",
     }),
   },
   {
@@ -128,6 +144,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(1_000, 12_000)),
       method: "upi",
       persona: { kind: "funds_on_date", fundsAt: t + rng.int(20, 30) * HOUR },
+      truthRootCause: "limit_exceeded",
     }),
   },
   {
@@ -138,6 +155,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(150, 2_000)),
       method: "mandate",
       persona: { kind: "funds_on_date", fundsAt: t + rng.int(12, 120) * HOUR },
+      truthRootCause: "insufficient_funds",
     }),
   },
   {
@@ -148,6 +166,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(150, 2_500)),
       method: "mandate",
       persona: { kind: "needs_new_method", reachable: rng.bool(0.7), respondP: rng.next() * 0.3 + 0.45 },
+      truthRootCause: "mandate_inactive",
     }),
   },
   {
@@ -158,6 +177,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(500, 15_000)),
       method: "upi",
       persona: { kind: "price_sensitive", minIncentive: rupees(rng.int(100, 500)), respondP: rng.next() * 0.25 + 0.55 },
+      truthRootCause: "buyer_price_sensitive",
     }),
   },
   {
@@ -168,6 +188,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(400, 9_000)),
       method: "upi",
       persona: { kind: "distracted_reachable", respondP: rng.next() * 0.25 + 0.5 },
+      truthRootCause: "buyer_distracted",
     }),
   },
   {
@@ -178,6 +199,7 @@ const ARCHETYPES: Archetype[] = [
       amount: rupees(rng.int(300, 6_000)),
       method: "upi",
       persona: { kind: "dead" },
+      truthRootCause: "unrecoverable",
     }),
   },
   {
@@ -189,6 +211,7 @@ const ARCHETYPES: Archetype[] = [
       method: "netbanking",
       dueAt: t - rng.int(1, 10) * DAY,
       persona: { kind: "b2b_will_pay", payAround: t + rng.int(1, 6) * DAY, respondP: rng.next() * 0.25 + 0.6 },
+      truthRootCause: "b2b_cashflow",
     }),
   },
   {
@@ -200,6 +223,7 @@ const ARCHETYPES: Archetype[] = [
       method: "netbanking",
       dueAt: t - rng.int(1, 14) * DAY,
       persona: { kind: "b2b_dispute" },
+      truthRootCause: "b2b_dispute",
     }),
   },
   {
@@ -211,6 +235,7 @@ const ARCHETYPES: Archetype[] = [
       method: "netbanking",
       dueAt: t - rng.int(5, 20) * DAY,
       persona: { kind: "dead" },
+      truthRootCause: "unrecoverable",
     }),
   },
 ];
@@ -220,6 +245,7 @@ export function generateBatch(seed: number, n = 120): GeneratedBatch {
   const weighted = ARCHETYPES.map((a) => [a, a.weight] as const);
   const cases: AtRiskCase[] = [];
   const truth = new Map<string, Persona>();
+  const truthRootCause = new Map<string, RootCause>();
 
   for (let i = 0; i < n; i++) {
     const id = `case_${(i + 1).toString().padStart(4, "0")}`;
@@ -243,7 +269,8 @@ export function generateBatch(seed: number, n = 120): GeneratedBatch {
       status: "new",
     });
     truth.set(id, b.persona);
+    truthRootCause.set(id, b.truthRootCause);
   }
 
-  return { cases, truth };
+  return { cases, truth, truthRootCause };
 }

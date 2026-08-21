@@ -108,17 +108,37 @@ Every decision that moves or spends money — whether to retry, when, how much
 incentive, escalate vs stop — is **deterministic policy + guardrails**.
 
 We measure this rather than asserting it. `npm run eval:diagnosis` scores each
-classifier against hidden ground truth on identical cases:
+classifier against hidden ground truth on identical cases (seed 42, 120 cases):
 
-| Classifier | Overall | Rules path | Text path |
-| --- | --- | --- | --- |
-| rules + offline heuristic | 88.3% | **100%** | 72.0% |
-| rules + Gemini | run `LLM=1 npm run eval:diagnosis` | | |
+| Classifier | Overall | Rules path | **Text path** | Money behind wrong calls | Cost |
+| --- | --- | --- | --- | --- | --- |
+| rules + offline heuristic | 88.3% | **100%** | 72.0% | ₹4,25,989 | ₹0 |
+| rules + **Gemini 3.7 Flash** | **93.3%** | **100%** | **84.0%** | **₹19,645** | ₹1 (50 calls) |
 
-The honest finding: the deterministic rules are perfect on structured Razorpay
-errors, and the *text* path is where the model has to earn its place — the
-heuristic's worst confusion is mistaking likely bad debt for a cashflow delay
-(₹4L of exposure on seed 42). That's a measurable target, not a vibe.
+The deterministic rules are perfect on structured Razorpay errors — a model adds
+nothing there, which is exactly why we don't call one. The *text* path is where
+it earns its place: **+12 accuracy points, and ₹4.06L less money sitting behind a
+wrong call, for ₹1 of model spend.** Gemini eliminates the heuristic's worst
+confusion — reading likely bad debt as a recoverable cashflow delay.
+
+That flows straight through to money, because a better diagnosis means less
+wasted chasing:
+
+| Seed 42 batch | offline heuristic | + Gemini 3.7 Flash |
+| --- | --- | --- |
+| Gross recovered | ₹19,07,364 | **₹20,39,558** |
+| Intervention cost | ₹2,552.60 | **₹993.55** (−61%) |
+| AI cost | ₹0 | ₹1 |
+| **Net recovered** | ₹19,04,811 | **₹20,38,563** (**+₹1,33,752**) |
+
+It recovers one *fewer* case and ₹1.32L *more* money — because it correctly gives
+up on the dead ones and spends the effort where it pays. **₹1 of AI returned
+₹1.34L of net recovery.**
+
+The headline metrics elsewhere in this README are the **offline** ones: they are
+deterministic, free, and reproducible on a fresh clone. The LLM figures above are
+a measured enhancement (a model call is non-deterministic, so re-running may vary
+by a point or two), reported separately rather than blended into the headline.
 
 The LLM layer is **provider-agnostic** (defaults to Gemini, one env var to swap):
 

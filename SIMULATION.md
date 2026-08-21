@@ -143,8 +143,12 @@ invariants hold in every run. Safety does not depend on our chosen policy values
   why the dashboard and CLI lead with the payments-only like-for-like figure, and
   why `report.paymentsSegment` is a first-class metric.
 - **Not** that the LLM is required. The headline numbers run with the
-  deterministic offline heuristic and no API key; the LLM is measured separately
-  (`npm run eval:diagnosis`).
+  deterministic offline heuristic and no API key. The LLM is measured separately
+  (`npm run eval:diagnosis`) and reported as a delta: on seed 42, Gemini 3.7
+  Flash lifts text-path diagnosis 72% → 84%, cuts money-behind-wrong-calls from
+  ₹4.26L to ₹0.20L, and raises net recovery ₹19.05L → ₹20.39L for ₹1 of spend.
+  Those figures come from a non-deterministic model call, so they are *not* used
+  as the reproducible headline.
 
 ## 7. Reproduce or falsify it
 

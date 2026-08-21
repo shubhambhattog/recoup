@@ -18,8 +18,16 @@
 **Content to have staged (so you never wait on a network call)**
 - [ ] Terminal A: `npm run sweep` already run once, output scrolled to the summary block.
 - [ ] Terminal B: `npm run eval:diagnosis` output visible (the head-to-head table).
-- [ ] Terminal C: `npm run razorpay:live` output visible, **plus one link paid** (see below).
+- [ ] Terminal C: the **re-run** of `razorpay:live` after paying a link — the output
+      that shows `idempotent re-run → SAME link ✓` and `recovered=true ✓`. That
+      re-run is the money shot, not the first run.
 - [ ] The Razorpay dashboard open in a tab showing the created links (optional but strong).
+
+> ⏰ **Record (and stage Terminal C) between 08:00 and 19:00 IST.** The RBI
+> contact window is enforced for real on the live path: after 19:00 the
+> guardrails will — correctly — block link creation, and there is nothing to pay.
+> If you *do* record at night, the blocks become your on-screen proof instead,
+> but the paid-link demo must already be in the can from daytime.
 
 **Do this first — it is the single strongest 5 minutes you can spend**
 
@@ -33,7 +41,9 @@
 > demonstration.
 >
 > ⚠️ Re-run with the **same seed**. A different seed generates a different case
-> set with different reference ids and will not find your paid link.
+> set with different reference ids and will not find your paid link. In
+> PowerShell, `$env:SEED` persists only in that window — re-run in the **same
+> terminal**, or set it again; a fresh window silently falls back to seed 42.
 
 **Do a full dry run once.** Not for polish — to find the one thing that breaks.
 
@@ -124,8 +134,11 @@ Safety card. **Slow down here too — this is the money shot.**
 
 ## 3:00 – 3:40 · Bounded and gated (trust)
 
-**On screen:** flip **Human gate** to **Manual**. Wait for the Approvals queue.
-Then **Approve all & re-run**.
+**On screen:** ⚠️ **first drag Lost-confirm back to 14% and click Run batch** —
+the ₹19.05L / ₹18.06L figures below are for default chaos, and the previous
+section left the slider at 40%. Do it silently while speaking the first two
+sentences. Then flip **Human gate** to **Manual**, wait for the Approvals queue,
+then **Approve all & re-run**.
 
 > "Bounded means the agent physically cannot act outside its limits. Attempt caps,
 > cooldowns, a per-customer daily cap, an incentive budget, opt-out honoured
@@ -165,12 +178,15 @@ Then **Approve all & re-run**.
 > cases.
 >
 > And this isn't only a simulation." **(Terminal C)** "Same decision loop, pointed at
-> real Razorpay test-mode APIs. Real payment links, idempotent. Here's a guardrail
-> blocking a **real** API call. Here's smart timing **deferring** a retry to
-> tomorrow morning instead of firing it now.
+> real Razorpay test-mode APIs. Real payment links, idempotent — the re-run
+> returns the **same** link, never a duplicate. And here's smart timing
+> **deferring** a retry to tomorrow morning instead of firing it now — the same
+> RBI window applies to these real calls too; run this after 7pm and it blocks
+> them outright.
 >
-> And here —" **(the paid link)** "— I pay one with a test card, re-run, and the
-> agent reconciles it as recovered. Detection to money, closed."
+> And here —" **(the `recovered=true ✓` line)** "— I paid one of these links with a
+> test card, re-ran, and the agent reconciled it as recovered. Detection to real
+> money, closed."
 
 ---
 
@@ -206,10 +222,17 @@ Then **Approve all & re-run**.
 - **Silence is fine** while something loads. Filler ("um, so, basically") is not.
 - If something misbehaves live, **say what you expected and move on**. Recovering
   gracefully on camera is exactly on-brand for this project.
-- **Under 5:00.** If you must cut: shorten the AI section to two sentences. The
-  reconciliation and the human gate must stay.
+- **The script is written to land at exactly 5:00, which means it has zero
+  slack.** Speak at your dry-run pace and aim to finish at **4:40–4:50** — that
+  absorbs a slow page load or one stumble. The AI section (3:40) is the pressure
+  valve: it survives being cut to two sentences; the reconciliation trace and the
+  human gate must stay at full length.
 - Upload **unlisted**, title it `Recoup — Bounded Revenue Recovery Agent (Razorpay
-  AI Buildathon, Track 03)`, and put the repo + live URL in the description.
+  AI Buildathon, Track 03)`. In the description put the repo URL, the live demo
+  URL, and chapter timestamps (`0:00 Problem · 0:30 One case end-to-end · 1:20
+  Measured results · 2:15 Breaking it live · 3:00 Human gate · 3:40 AI + real
+  Razorpay · 4:25 Close`) — a judge who skims will jump straight to what they
+  care about instead of scrubbing blind.
 
 ## If you have time for a second take
 

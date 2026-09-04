@@ -199,6 +199,22 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* Tailwind v4's Preflight leaves buttons at cursor: default, so nothing in
+     the app read as clickable. Anything the user can actually click should say
+     so; disabled controls are excluded and get not-allowed instead. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  a[href],
+  label[for],
+  summary,
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+
+  :disabled {
+    cursor: not-allowed;
+  }
 }
 
 .mono {

@@ -255,6 +255,33 @@ scrolling needed.
 | 5 | *(now alt-tab)* the `eval:diagnosis` table | terminal | 72% → **84%** |
 | 6 | scroll down to the `razorpay:live` **re-run** | terminal | `SAME link ✓`, `recovered=true ✓` |
 
+**The `eval:diagnosis` output you're pointing at looks like this:**
+
+```
+  classifier                           overall     rules   text path   calls
+  rules + offline heuristic              88.3%    100.0%       72.0%       0
+  rules + gemini:gemini-3.7-flash        93.3%    100.0%       84.0%      50
+
+  HEAD TO HEAD (text-only cases — the model's actual territory)
+    accuracy      72.0% → 84.0%   (+12.0 pts)
+    money behind wrong calls  ₹4,25,989 → ₹19,645   (-₹4,06,344)
+    model cost    ₹1 for 50 calls
+
+  Rules coverage: 58.3% of cases need no model at all.
+```
+
+| As you say… | Cursor goes to |
+|---|---|
+| "Rules: 100%" | the **`rules`** column — 100.0% on *both* rows |
+| "the heuristic gets 72%" | row 1, `text path` → **72.0%** |
+| "Gemini 3.7 Flash gets 84%" | row 2, `text path` → **84.0%** |
+| "₹4.26 lakh to ₹20,000" | `money behind wrong calls  ₹4,25,989 → ₹19,645` |
+| "₹1 of model spend" | `model cost  ₹1 for 50 calls` |
+
+> ⚠️ **84% comes from a live Gemini call, so it is not deterministic.** Run
+> `eval:diagnosis` once before recording and **read the numbers off your own
+> output**, not off this script. If yours says 82%, say 82%.
+
 > ⚠️ **Two numbers in this beat are NOT on the dashboard.** Gemini's **84%** and
 > the **₹1 → ₹1.34 lakh** ROI exist only in the terminal. Also **never point at
 > the AI usage card's `Model calls · cost` row** — it reads **`0 · ₹0.00`**,
@@ -276,8 +303,8 @@ scrolling needed.
 > truth, so I can grade every diagnosis. Rules: 100%. Text-only cases: the
 > heuristic gets 72%," **(now alt-tab to the terminal)** "**Gemini 3.7 Flash gets
 > 84%** — and money sitting behind a wrong call drops from ₹4.26 lakh to ₹20,000.
-> **₹1 of model spend, ₹1.34 lakh more net recovery**, because a better diagnosis
-> means it stops chasing dead cases.
+> **₹1 of model spend takes ₹4 lakh of recovery out from behind a wrong
+> diagnosis**, because a better diagnosis means it stops chasing dead cases.
 >
 > And this isn't only a simulation." **(scroll to the `razorpay:live` re-run)**
 > "Same decision loop, pointed at real Razorpay test-mode APIs. Real payment
